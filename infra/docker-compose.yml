@@ -1,0 +1,126 @@
+name: keystone
+
+services:
+  order-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: order_service
+      POSTGRES_USER: keystone
+      POSTGRES_PASSWORD: keystone
+    ports:
+      - "55432:5432"
+    volumes:
+      - order-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keystone -d order_service"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  inventory-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: inventory_service
+      POSTGRES_USER: keystone
+      POSTGRES_PASSWORD: keystone
+    ports:
+      - "55433:5432"
+    volumes:
+      - inventory-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keystone -d inventory_service"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  payment-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: payment_service
+      POSTGRES_USER: keystone
+      POSTGRES_PASSWORD: keystone
+    ports:
+      - "55434:5432"
+    volumes:
+      - payment-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keystone -d payment_service"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mock-payment-gateway:
+    image: wiremock/wiremock:3.9.2
+    command: ["--global-response-templating"]
+    ports:
+      - "8095:8080"
+    volumes:
+      - ./wiremock/mappings:/home/wiremock/mappings:ro
+
+  redpanda:
+    # docker.io, not docker.redpanda.com: the latter mirrors the same image
+    # but always pulls anonymously regardless of a docker.io login, and hits
+    # Docker Hub's unauthenticated rate limit far too easily.
+    image: docker.io/redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=localhost:8082
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  redpanda-console:
+    image: docker.io/redpandadata/console:v2.8.1
+    environment:
+      KAFKA_BROKERS: redpanda:29092
+    ports:
+      - "8090:8080"
+    depends_on:
+      - redpanda
+
+  jaeger:
+    image: docker.io/jaegertracing/all-in-one:1.76.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # UI
+      - "4317:4317"   # OTLP gRPC — services export traces here directly
+      - "4318:4318"   # OTLP HTTP
+
+  prometheus:
+    image: docker.io/prom/prometheus:v3.13.2
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: docker.io/grafana/grafana:13.0.6
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: keystone
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  order-db-data:
+  inventory-db-data:
+  payment-db-data:

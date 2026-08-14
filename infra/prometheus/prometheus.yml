@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 5s
+
+# Services run as plain host processes (`java -jar` / `./gradlew bootRun`),
+# not as containers in this compose stack — see README "Running it
+# locally" — so Prometheus, which *does* run in a container, has to reach
+# back out to the host to scrape them.
+scrape_configs:
+  - job_name: order-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+
+  - job_name: inventory-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8082"]
+
+  - job_name: payment-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8083"]

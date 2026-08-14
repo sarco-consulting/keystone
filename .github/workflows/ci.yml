@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Unit + Testcontainers integration tests across all four modules.
+      # ubuntu-latest ships Docker out of the box, so Testcontainers just
+      # works here — no Podman socket wrangling needed, unlike local dev.
+      - name: Build and test
+        run: ./gradlew build
+
+      # Not part of `build` above (its own module, deliberately not wired
+      # into the default task graph) — boots all three real service jars
+      # against Testcontainers-managed Postgres/Redpanda/WireMock and drives
+      # the actual saga over HTTP. See e2e-tests/build.gradle.kts.
+      - name: Run end-to-end saga test
+        run: ./gradlew :e2e-tests:test
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: "**/build/reports/tests/"
+          retention-days: 7
+
+  dependency-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy vulnerability scan (dependencies)
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload results to the Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
+  # Publishes container images — a visible, external action — so it's
+  # gated to pushes on main only, never on PRs (including from forks, which
+  # wouldn't have GHCR write permission anyway).
+  docker-build-and-push:
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [order-service, inventory-service, payment-service]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Packages an already-tested jar — see services/*/Dockerfile — rather
+      # than recompiling inside the image.
+      - name: Build jar
+        run: ./gradlew :services:${{ matrix.service }}:bootJar
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/keystone-${{ matrix.service }}:latest
+            ghcr.io/${{ github.repository_owner }}/keystone-${{ matrix.service }}:${{ github.sha }}
+
+      # Informational, not a gate: a JRE base-image CVE the author can't
+      # immediately fix shouldn't block every merge, but it should be
+      # visible.
+      - name: Trivy vulnerability scan (image)
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/keystone-${{ matrix.service }}:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "0"
