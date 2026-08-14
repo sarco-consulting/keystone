@@ -56,7 +56,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Trivy vulnerability scan (dependencies)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -121,7 +121,7 @@ jobs:
       # immediately fix shouldn't block every merge, but it should be
       # visible.
       - name: Trivy vulnerability scan (image)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/keystone-${{ matrix.service }}:${{ github.sha }}
           format: table
