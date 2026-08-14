@@ -51,6 +51,10 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      # upload-sarif fetches workflow-run metadata for its status reporting;
+      # without this it 403s on that call and fails the step, not just the
+      # telemetry it's actually trying to send.
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
