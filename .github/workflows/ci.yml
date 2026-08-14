@@ -68,11 +68,27 @@ jobs:
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
 
+      # GitHub's code scanning (what this uploads to) requires GitHub
+      # Advanced Security on private repos — not available by default on a
+      # personal account. continue-on-error so that gap doesn't fail CI; it
+      # starts working with zero further changes the moment this repo goes
+      # public, since code scanning is free for public repos.
       - name: Upload results to the Security tab
         if: always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
+
+      # Always works regardless of code-scanning availability — the actual
+      # fallback for a private repo.
+      - name: Upload scan results as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.sarif
+          retention-days: 30
 
   # Publishes container images — a visible, external action — so it's
   # gated to pushes on main only, never on PRs (including from forks, which
