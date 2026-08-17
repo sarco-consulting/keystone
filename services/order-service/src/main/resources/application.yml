@@ -22,6 +22,19 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       auto-offset-reset: earliest
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OAUTH2_ISSUER_URI:http://localhost:8180/realms/keystone}
+
+springdoc:
+  swagger-ui:
+    oauth:
+      client-id: keystone-service-client
+      # Dev-only secret, already committed in infra/keycloak/keystone-realm.json —
+      # pre-filling it here is no additional exposure, just fewer clicks in Swagger UI.
+      client-secret: keystone-dev-secret
 
 otel:
   service:

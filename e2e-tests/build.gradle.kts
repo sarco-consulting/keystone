@@ -47,6 +47,7 @@ tasks.test {
     systemProperty("e2e.inventory-service.jar", project(":services:inventory-service").tasks.getByName("bootJar").outputs.files.singleFile.absolutePath)
     systemProperty("e2e.payment-service.jar", project(":services:payment-service").tasks.getByName("bootJar").outputs.files.singleFile.absolutePath)
     systemProperty("e2e.wiremock-mappings-dir", rootProject.file("infra/wiremock/mappings").absolutePath)
+    systemProperty("e2e.keycloak-realm-file", rootProject.file("infra/keycloak/keystone-realm.json").absolutePath)
 
     // The saga plays out over real async hops (HTTP -> outbox -> Kafka ->
     // consumer -> outbox -> Kafka -> consumer...) across three real JVMs;

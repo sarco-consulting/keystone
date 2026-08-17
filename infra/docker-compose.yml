@@ -89,6 +89,18 @@ services:
     depends_on:
       - redpanda
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: keystone
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak/keystone-realm.json:/opt/keycloak/data/import/keystone-realm.json:ro
+    ports:
+      - "8180:8080" # 8090 is redpanda-console; 8180 is the conventional Keycloak-dev alt port
+
   jaeger:
     image: docker.io/jaegertracing/all-in-one:1.76.0
     environment:

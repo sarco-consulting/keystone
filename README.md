@@ -48,15 +48,30 @@ order-service  ──commands──►  inventory-service
   [ADR-0003](docs/adr/0003-trace-context-across-the-outbox-boundary.md)
 - **`GET /orders/{id}/timeline`** — watch a distributed transaction unfold in
   one API call, backed by a persisted saga-step audit trail
+- **JWT authentication** on every endpoint (Keycloak, `client_credentials`
+  grant). [ADR-0005](docs/adr/0005-jwt-authentication-via-keycloak.md)
+- **Interactive API docs** (Swagger UI per service) that can fetch a token
+  from Keycloak directly, or accept one pasted in.
+  [ADR-0006](docs/adr/0006-swagger-ui-authorize-and-keycloak-cors.md)
 
 ## Running it locally
 
 ```bash
-cd infra && docker compose up -d      # Postgres x3, Redpanda, WireMock, Jaeger, Prometheus, Grafana
+cd infra && docker compose up -d      # Postgres x3, Redpanda, WireMock, Keycloak, Jaeger, Prometheus, Grafana
 cd ..
 ./gradlew :services:order-service:bootRun &        # :8081
 ./gradlew :services:inventory-service:bootRun &     # :8082
 ./gradlew :services:payment-service:bootRun &       # :8083
+```
+
+Every endpoint except `/actuator/*` now requires a bearer token — fetch one
+from Keycloak first (requires `jq`; see [docs/runbook.md](docs/runbook.md)
+for the full prerequisites list, including which ports need to be free):
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8180/realms/keystone/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=keystone-service-client -d client_secret=keystone-dev-secret \
+  | jq -r .access_token)
 ```
 
 Then place an order and watch it happen:
@@ -64,10 +79,16 @@ Then place an order and watch it happen:
 ```bash
 curl -s -X POST http://localhost:8081/orders \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"customerId":"demo","currency":"USD","items":[{"productId":"sku-widget","quantity":2,"unitPrice":15.00}]}'
 
-curl -s http://localhost:8081/orders/{id}/timeline    # the id from the response above
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8081/orders/{id}/timeline    # the id from the response above
 ```
+
+Or skip curl entirely and use Swagger UI —
+`http://localhost:8081/swagger-ui.html` (8082/8083 for the other two) — and
+click **Authorize** to fetch a token from Keycloak in-browser (falls back
+to pasting a token manually if that errors; see docs/runbook.md).
 
 Full walkthrough — including how to trigger the compensation and
 insufficient-stock paths, and where to find traces/metrics/logs —
@@ -96,8 +117,9 @@ in [docs/runbook.md](docs/runbook.md).
 ## Tech stack
 
 Java 21 · Spring Boot 3.5 · Kafka-API (Redpanda) · PostgreSQL · Resilience4j
-· OpenTelemetry · Micrometer/Prometheus/Grafana · Testcontainers · Gradle
-(Kotlin DSL, multi-module)
+· Spring Security (OAuth2 resource server) + Keycloak · OpenTelemetry ·
+Micrometer/Prometheus/Grafana · Testcontainers · Gradle (Kotlin DSL,
+multi-module)
 
 ## Repository layout
 
@@ -105,13 +127,13 @@ Java 21 · Spring Boot 3.5 · Kafka-API (Redpanda) · PostgreSQL · Resilience4j
 services/          order-service, inventory-service, payment-service
 libs/common-events/ shared event/command contracts, outbox + tracing utils
 e2e-tests/          full-saga end-to-end test (Testcontainers-orchestrated)
-infra/              docker-compose stack, WireMock stubs, Grafana dashboards
+infra/              docker-compose stack, WireMock stubs, Keycloak realm, Grafana dashboards
 docs/               architecture, ADRs, runbook
 ```
 
 ## Testing
 
-The full pyramid, 43 tests, all passing against real dependencies — no
+The full pyramid, 50 tests, all passing against real dependencies — no
 mocked databases or in-memory substitutes anywhere in it:
 
 - **Unit tests** per service — domain logic, application services, the saga
@@ -139,14 +161,11 @@ three services, each also scanned before publish.
 
 ## Production Hardening Roadmap
 
-What's explicitly out of scope, by design — this is what makes the repo
-non-stealable and doubles as an honest account of what a real deployment
-would still need:
+What's explicitly out of scope, by design — an honest account of what a
+real deployment would still need:
 
-- **No authentication or authorization on any API.** Every endpoint is
-  wide open. This is the single biggest gap versus anything internet-facing
-  and would be the first thing added for real use (OAuth2/SSO via Keycloak,
-  or at minimum an API-key check).
+- Fine-grained per-endpoint authorization/roles (today's JWT check only
+  validates that a caller is authenticated, not what they're allowed to do)
 - Real payment gateway integration (currently WireMock-stubbed, clearly
   labeled as such)
 - Multi-tenancy, billing, admin UI

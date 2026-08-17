@@ -9,7 +9,10 @@
 ```mermaid
 flowchart LR
     Client([Client / Postman])
-    Client -->|POST /orders| Order[order-service]
+    KC[(Keycloak)]
+    Client -->|1: client_credentials| KC
+    KC -->|2: JWT| Client
+    Client -->|3: POST /orders + Bearer JWT| Order[order-service]
 
     subgraph Keystone
         Order -->|commands| Inventory[inventory-service]
@@ -20,6 +23,11 @@ flowchart LR
 
     Payment -->|mocked| Gateway[(External payment gateway\nWireMock stub)]
 ```
+
+Every inbound REST call requires a valid JWT — each service independently
+validates it as an OAuth2 resource server, no gateway or shared auth layer
+in front. See [Security](#security) below and
+[ADR-0005](adr/0005-jwt-authentication-via-keycloak.md).
 
 ## Order saga — happy path
 
@@ -69,6 +77,33 @@ sequenceDiagram
 See [ADR-0001](adr/0001-saga-orchestration-over-choreography.md) for why the
 saga is orchestrated from `order-service` rather than choreographed.
 
+## Security
+
+Each service is an independent **OAuth2 resource server** (Spring Security)
+validating JWTs issued by **Keycloak** — no API gateway or shared auth layer;
+every service does its own signature/issuer/expiry check against Keycloak's
+`issuer-uri` via OIDC discovery. Callers authenticate with the
+`client_credentials` grant (machine-to-machine only — no human end-users, no
+login UI). `/actuator/health`, `/actuator/info`, `/actuator/prometheus`, and
+the Swagger/OpenAPI docs endpoints are the only paths open without a token;
+everything else — including the business endpoints and `/actuator/metrics`
+— requires one.
+
+This is authentication only: a valid token proves the caller is a
+recognized client, not what that client is allowed to do. Fine-grained
+per-endpoint authorization is explicitly out of scope for now — see the
+README's Production Hardening Roadmap.
+
+Interactive API docs (Swagger UI, per service on `/swagger-ui.html`) can
+fetch a token directly from Keycloak via its Authorize button, or accept
+one pasted in manually — see [ADR-0006](adr/0006-swagger-ui-authorize-and-keycloak-cors.md)
+for why both options exist.
+
+[ADR-0005](adr/0005-jwt-authentication-via-keycloak.md) covers the full
+reasoning: why Keycloak over a static keypair or shared secret, why
+authentication is duplicated per service rather than shared, and what's
+explicitly deferred.
+
 ## Reliability mechanisms
 
 - **Transactional outbox** — every state-changing write and its outgoing
@@ -112,3 +147,11 @@ against real Postgres, and one Testcontainers-orchestrated end-to-end test
 (`e2e-tests`) that launches all three service jars as real processes and
 drives the actual saga over HTTP — both the happy path and the compensation
 path. See the root [README](../README.md#testing) for how to run each layer.
+
+Auth is exercised at three different fidelities rather than the same way
+everywhere: MockMvc slice tests use `spring-security-test`'s `jwt()`
+postprocessor (no real token needed); per-service integration tests stub
+the `JwtDecoder` bean directly (no Keycloak container, since three
+redundant copies of the same issuer-discovery check add little); the
+end-to-end test runs a real Keycloak container and fetches a genuine
+`client_credentials` token. See [ADR-0005](adr/0005-jwt-authentication-via-keycloak.md).

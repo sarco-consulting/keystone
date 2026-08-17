@@ -1,0 +1,20 @@
+{
+  "realm": "keystone",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "keystone-service-client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "keystone-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "webOrigins": ["http://localhost:8081", "http://localhost:8082", "http://localhost:8083"]
+    }
+  ]
+}

@@ -8,7 +8,9 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
@@ -19,6 +21,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.redpanda.RedpandaContainer;
@@ -65,21 +68,40 @@ class OrderSagaEndToEndTest {
             .withCopyFileToContainer(
                     MountableFile.forHostPath(System.getProperty("e2e.wiremock-mappings-dir")), "/home/wiremock/mappings");
 
+    // Same "start-dev --import-realm plus a mounted realm file" idiom as
+    // infra/docker-compose.yml — see ADR-0005.
+    @Container
+    static GenericContainer<?> keycloak = new GenericContainer<>(DockerImageName.parse("quay.io/keycloak/keycloak:26.4"))
+            .withExposedPorts(8080)
+            .withEnv("KEYCLOAK_ADMIN", "admin")
+            .withEnv("KEYCLOAK_ADMIN_PASSWORD", "keystone")
+            .withEnv("KC_HEALTH_ENABLED", "true")
+            .withCommand("start-dev", "--import-realm")
+            .withCopyFileToContainer(
+                    MountableFile.forHostPath(System.getProperty("e2e.keycloak-realm-file")),
+                    "/opt/keycloak/data/import/keystone-realm.json")
+            .waitingFor(Wait.forHttp("/realms/keystone").forStatusCode(200));
+
     private static final HttpClient HTTP = HttpClient.newHttpClient();
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private static ManagedService orderService;
     private static ManagedService inventoryService;
     private static ManagedService paymentService;
+    private static String accessToken;
 
     @BeforeAll
-    static void startServices() throws IOException {
+    static void startServices() throws IOException, InterruptedException {
         String bootstrapServers = redpanda.getBootstrapServers().replace("PLAINTEXT://", "");
         String gatewayBaseUrl = "http://" + wiremock.getHost() + ":" + wiremock.getMappedPort(8080);
+        String issuerUri = "http://" + keycloak.getHost() + ":" + keycloak.getMappedPort(8080) + "/realms/keystone";
 
-        Map<String, String> orderEnv = envOf(dbEnv(orderDb), kafkaEnv(bootstrapServers));
-        Map<String, String> inventoryEnv = envOf(dbEnv(inventoryDb), kafkaEnv(bootstrapServers));
-        Map<String, String> paymentEnv = envOf(dbEnv(paymentDb), kafkaEnv(bootstrapServers), gatewayEnv(gatewayBaseUrl));
+        accessToken = fetchClientCredentialsToken(issuerUri);
+
+        Map<String, String> orderEnv = envOf(dbEnv(orderDb), kafkaEnv(bootstrapServers), keycloakEnv(issuerUri));
+        Map<String, String> inventoryEnv = envOf(dbEnv(inventoryDb), kafkaEnv(bootstrapServers), keycloakEnv(issuerUri));
+        Map<String, String> paymentEnv =
+                envOf(dbEnv(paymentDb), kafkaEnv(bootstrapServers), gatewayEnv(gatewayBaseUrl), keycloakEnv(issuerUri));
 
         orderService = ManagedService.start("order-service", System.getProperty("e2e.order-service.jar"), 18081, orderEnv);
         inventoryService = ManagedService.start("inventory-service", System.getProperty("e2e.inventory-service.jar"), 18082, inventoryEnv);
@@ -88,6 +110,17 @@ class OrderSagaEndToEndTest {
         orderService.waitUntilHealthy(Duration.ofSeconds(60));
         inventoryService.waitUntilHealthy(Duration.ofSeconds(60));
         paymentService.waitUntilHealthy(Duration.ofSeconds(60));
+    }
+
+    private static String fetchClientCredentialsToken(String issuerUri) throws IOException, InterruptedException {
+        String form = "grant_type=client_credentials&client_id=keystone-service-client&client_secret=keystone-dev-secret";
+        HttpRequest request = HttpRequest.newBuilder(URI.create(issuerUri + "/protocol/openid-connect/token"))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(BodyPublishers.ofString(form, StandardCharsets.UTF_8))
+                .build();
+        HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(200);
+        return JSON.readTree(response.body()).get("access_token").asText();
     }
 
     @AfterAll
@@ -153,10 +186,15 @@ class OrderSagaEndToEndTest {
         return Map.of("GATEWAY_BASE_URL", baseUrl);
     }
 
+    private static Map<String, String> keycloakEnv(String issuerUri) {
+        return Map.of("OAUTH2_ISSUER_URI", issuerUri);
+    }
+
     private String createOrder(String customerId, List<Map<String, Object>> items) throws IOException, InterruptedException {
         Map<String, Object> body = Map.of("customerId", customerId, "currency", "USD", "items", items);
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:18081/orders"))
                 .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + accessToken)
                 .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)))
                 .build();
         HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
@@ -167,7 +205,10 @@ class OrderSagaEndToEndTest {
     private JsonNode pollUntilTerminalStatus(String orderId) throws IOException, InterruptedException {
         Instant deadline = Instant.now().plus(SAGA_TIMEOUT);
         while (Instant.now().isBefore(deadline)) {
-            HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:18081/orders/" + orderId)).GET().build();
+            HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:18081/orders/" + orderId))
+                    .header("Authorization", "Bearer " + accessToken)
+                    .GET()
+                    .build();
             HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
             JsonNode order = JSON.readTree(response.body());
             String status = order.get("status").asText();
@@ -180,7 +221,10 @@ class OrderSagaEndToEndTest {
     }
 
     private List<String> timelineSteps(String orderId) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:18081/orders/" + orderId + "/timeline")).GET().build();
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:18081/orders/" + orderId + "/timeline"))
+                .header("Authorization", "Bearer " + accessToken)
+                .GET()
+                .build();
         HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
         JsonNode steps = JSON.readTree(response.body()).get("steps");
         return java.util.stream.StreamSupport.stream(steps.spliterator(), false)
