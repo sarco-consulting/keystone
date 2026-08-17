@@ -53,6 +53,9 @@ order-service  ──commands──►  inventory-service
 - **Interactive API docs** (Swagger UI per service) that can fetch a token
   from Keycloak directly, or accept one pasted in.
   [ADR-0006](docs/adr/0006-swagger-ui-authorize-and-keycloak-cors.md)
+- **Load-tested with Gatling** — the saga's resilience claims verified under
+  concurrent load, not just manually, with real numbers and SLOs asserted
+  automatically. [ADR-0007](docs/adr/0007-load-testing-with-gatling.md)
 
 ## Running it locally
 
@@ -113,6 +116,10 @@ in [docs/runbook.md](docs/runbook.md).
   three services
 - Verified by actually stopping the payment gateway mid-saga and confirming
   the system degrades and recovers correctly — see docs/runbook.md
+- **Verified under load**: 255 concurrent orders, 100% success, zero
+  failures — full distributed-transaction (saga) completion at p95 1.5s,
+  p99 2.0s, individual HTTP calls at p95 11ms. Real numbers from a real run,
+  not estimates — see [docs/load-test.md](docs/load-test.md)
 
 ## Tech stack
 
@@ -127,8 +134,9 @@ multi-module)
 services/          order-service, inventory-service, payment-service
 libs/common-events/ shared event/command contracts, outbox + tracing utils
 e2e-tests/          full-saga end-to-end test (Testcontainers-orchestrated)
+load-tests/         Gatling load test against the real running stack
 infra/              docker-compose stack, WireMock stubs, Keycloak realm, Grafana dashboards
-docs/               architecture, ADRs, runbook
+docs/               architecture, ADRs, runbook, load test results
 ```
 
 ## Testing
@@ -145,10 +153,16 @@ mocked databases or in-memory substitutes anywhere in it:
   service jars, launched as real processes, against Testcontainers-managed
   Postgres/Redpanda/WireMock, driven purely over HTTP, asserting the exact
   saga-step sequence for both the happy path and the compensation path
+- **A load test** ([load-tests](load-tests)) — the same saga under
+  concurrency, against the real running stack rather than Testcontainers,
+  with SLOs asserted automatically. Deliberately manual/local, not part of
+  `./gradlew build` — see [docs/load-test.md](docs/load-test.md) for why
+  and for real results.
 
 ```bash
 ./gradlew build              # unit + integration tests, all four modules
 ./gradlew :e2e-tests:test    # the full saga, both branches
+./gradlew :load-tests:gatlingRun    # load test — requires the stack already running, see docs/runbook.md
 ```
 
 ## CI/CD

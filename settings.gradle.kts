@@ -9,5 +9,6 @@ include(
     "services:order-service",
     "services:inventory-service",
     "services:payment-service",
-    "e2e-tests"
+    "e2e-tests",
+    "load-tests"
 )

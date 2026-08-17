@@ -196,6 +196,24 @@ processes against Testcontainers-managed Postgres/Redpanda/WireMock — it
 does not reuse whatever's running from "Starting everything" above, and
 will bind its own ports (18081–18083) to avoid colliding with it.
 
+## Load testing
+
+Unlike the tests above, this targets the already-running stack from
+"Starting everything" directly (not Testcontainers), specifically so a run
+is watchable live on the Grafana dashboard:
+
+```bash
+./gradlew :load-tests:gatlingRun
+```
+
+Full scenario, load profile, and real results from an actual run:
+[docs/load-test.md](../docs/load-test.md). One operational note worth
+knowing before you run it: it consumes real seeded `sku-widget` stock on
+every run since it targets the same persistent database each time — reset
+with `docker compose down -v && docker compose up -d` between runs for a
+clean happy-path measurement, or expect later runs to legitimately hit the
+insufficient-stock compensation path once the seeded 500 units run out.
+
 ## Tearing down
 
 ```bash
